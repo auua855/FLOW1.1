@@ -1512,14 +1512,42 @@
                 }
             };
 
-            document.addEventListener('mousemove', onInputMove);
+            let lastMouseY = 0;
+
+            const updateCameraPitch = (deltaY) => {
+                if (!isChasing || !ray) return;
+                if (ray.userData.cameraPitch === undefined) ray.userData.cameraPitch = 0;
+                // Drag Down (positive deltaY on screen) -> Pitch Down?
+                // User said: "Trace Up/Down".
+                // Swipe Up (Negative DeltaY) -> Top View (Increase Pitch)?
+                // Swipe Down (Positive DeltaY) -> Behind View (Decrease Pitch)?
+                // Let's invert deltaY.
+                const sensitivity = 0.005;
+                ray.userData.cameraPitch -= deltaY * sensitivity;
+                ray.userData.cameraPitch = Math.max(0, Math.min(1.4, ray.userData.cameraPitch));
+            };
+
+            document.addEventListener('mousemove', (e) => {
+                onInputMove(e);
+                if (e.buttons === 1) updateCameraPitch(e.movementY);
+            });
             document.addEventListener('mousedown', startInteraction);
             document.addEventListener('mouseup', () => { isTouching = false; });
-            document.addEventListener('touchstart', startInteraction, { passive: false });
+
+            document.addEventListener('touchstart', (e) => {
+                startInteraction(e);
+                lastMouseY = e.touches[0].clientY;
+            }, { passive: false });
+
             document.addEventListener('touchmove', (e) => {
                 e.preventDefault();
                 updateInput(e.touches[0].clientX, e.touches[0].clientY);
+                const currentY = e.touches[0].clientY;
+                const deltaY = currentY - lastMouseY;
+                lastMouseY = currentY;
+                updateCameraPitch(deltaY);
             }, { passive: false });
+
             document.addEventListener('touchend', () => {
                 isTouching = false;
             });
@@ -1602,13 +1630,9 @@
                         // Initialize Camera Pitch if needed
                         if (ray.userData.cameraPitch === undefined) ray.userData.cameraPitch = 0;
 
-                        // Accumulate Input for Pitch (Slide to adjust, hold to keep)
-                        // InputY: -1 (Down/Back) to +1 (Up/Top)
-                        // User wants: Slide Up -> Top View. Slide Down -> Behind View.
-                        // So Positive Input increases Pitch.
-                        if (Math.abs(smoothedInput.y) > 0.05) {
-                            ray.userData.cameraPitch += smoothedInput.y * 0.03;
-                        }
+                        // REMOVED: Joystick Logic (Conflict with Swipe)
+                        // Pitch is now updated ONLY by touchmove/mousemove Delta events.
+
                         // Clamp Pitch: 0 (Behind) to 1.4 (Top-Down, approx 80 deg)
                         ray.userData.cameraPitch = Math.max(0, Math.min(1.4, ray.userData.cameraPitch));
 

@@ -162,6 +162,41 @@
         #right-arrow {
             right: 20px;
         }
+
+        /* Camera Controls */
+        #cam-controls {
+            position: absolute;
+            top: 50%;
+            right: 180px;
+            /* Left of contact display */
+            transform: translateY(-50%);
+            display: none;
+            /* Visible only in Chase Mode */
+            flex-direction: column;
+            gap: 20px;
+            z-index: 10;
+        }
+
+        .cam-btn {
+            width: 50px;
+            height: 50px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            color: white;
+            font-size: 24px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            user-select: none;
+            cursor: pointer;
+            backdrop-filter: blur(4px);
+            transition: background 0.2s;
+        }
+
+        .cam-btn:active {
+            background: rgba(255, 255, 255, 0.3);
+        }
     </style>
     <script src="three.min.js"></script>
 </head>
@@ -174,6 +209,12 @@
         <div id="contact-label">CONTACT</div>
         <div id="contact-count">0</div>
         <div id="guest-indicator"></div>
+    </div>
+
+    <!-- Camera Buttons -->
+    <div id="cam-controls">
+        <div id="cam-up" class="cam-btn">▲</div>
+        <div id="cam-down" class="cam-btn">▼</div>
     </div>
 
     <div id="ui">
@@ -256,6 +297,11 @@
         let isLanded = true;
         let isLandingSequence = false;
         let takeoffProgress = 0;
+
+        // Camera Controls Global
+        let camControls;
+        let isCamUpPressed = false;
+        let isCamDownPressed = false;
 
         let isRotatingLeft = false;
         let isRotatingRight = false;
@@ -551,8 +597,13 @@
                 targetAmbientIntensity = 0.4; targetDirIntensity = 0.5; isNight = false;
             }
             else {
-                targetSkyColorTop.setHex(0x000000); targetSkyColorBottom.setHex(0x001133); targetFogColor.setHex(0x001133);
-                targetAmbientIntensity = 0.15; targetDirIntensity = 0.0; isNight = true;
+                // Night Mode - Moderate Dark (Visible but Atmospheric)
+                targetSkyColorTop.setHex(0x000018); // Deep Navy
+                targetSkyColorBottom.setHex(0x001133); // Dark Blue
+                targetFogColor.setHex(0x001133);
+                targetAmbientIntensity = 0.3; // Visible
+                targetDirIntensity = 0.2; // Subtle Moonlight
+                isNight = true;
             }
         }
 
@@ -581,6 +632,12 @@
             scene.fog.color.lerp(targetFogColor, lerpSpeed);
             ambientLight.intensity += (targetAmbientIntensity - ambientLight.intensity) * lerpSpeed;
             dirLight.intensity += (targetDirIntensity - dirLight.intensity) * lerpSpeed;
+
+            // Debug Log (One time or periodic)
+            if (renderer.info.render.frame % 300 === 0) {
+                console.log("Env Update: Night=" + isNight + " Amb=" + ambientLight.intensity.toFixed(2));
+            }
+
             if (rayLight) {
                 const targetRayLight = isNight ? 1.5 : 0.0;
                 rayLight.intensity += (targetRayLight - rayLight.intensity) * 0.05;
@@ -648,6 +705,10 @@
             wBodyGeo = new THREE.BoxGeometry(0.5, 0.8, 0.05);
             wArmGeo = new THREE.BoxGeometry(0.15, 0.7, 0.05); wArmGeo.translate(0, -0.3, 0);
             wLegGeo = new THREE.BoxGeometry(0.18, 0.8, 0.05); wLegGeo.translate(0, -0.4, 0);
+
+            // Bird Material Def
+            birdMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+
             // 鳥（火曜日ゲスト）のジオメトリ改善
             birdGeometry = new THREE.Group();
             const bBody = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2, 4), new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0x222222, flatShading: true }));
@@ -1403,6 +1464,34 @@
                 }
             }, { passive: false });
 
+            // Camera Button Logic
+            camControls = document.getElementById('cam-controls');
+            const camUp = document.getElementById('cam-up');
+            const camDown = document.getElementById('cam-down');
+            // isCamUpPressed/Down are global now
+
+            const setupCamBtn = (btn, isUp) => {
+                const start = (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (isUp) isCamUpPressed = true;
+                    else isCamDownPressed = true;
+                };
+                const end = (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (isUp) isCamUpPressed = false;
+                    else isCamDownPressed = false;
+                };
+                btn.addEventListener('mousedown', start);
+                btn.addEventListener('touchstart', start, { passive: false });
+                btn.addEventListener('mouseup', end);
+                btn.addEventListener('mouseleave', end);
+                btn.addEventListener('touchend', end);
+            };
+            setupCamBtn(camUp, true);
+            setupCamBtn(camDown, false);
+
             speedBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (speedMode === 'NORMAL') {
@@ -1624,41 +1713,10 @@
                         ray.rotation.y += cameraRotationSpeed;
                     }
 
-                    // Chase Camera (Improved Vertical Control - Accumulative)
-                    let targetPos;
-                    if (isChasing) {
-                        // Initialize Camera Pitch if needed
-                        if (ray.userData.cameraPitch === undefined) ray.userData.cameraPitch = 0;
-
-                        // REMOVED: Joystick Logic (Conflict with Swipe)
-                        // Pitch is now updated ONLY by touchmove/mousemove Delta events.
-
-                        // Clamp Pitch: 0 (Behind) to 1.4 (Top-Down, approx 80 deg)
-                        ray.userData.cameraPitch = Math.max(0, Math.min(1.4, ray.userData.cameraPitch));
-
-                        const pitchAngle = ray.userData.cameraPitch; // 0 to 1.4 radians
-
-                        const orbitDist = 40.0;
-                        const camOffset = new THREE.Vector3(0, 0, 0);
-
-                        // Spherical Coords
-                        camOffset.y = Math.sin(pitchAngle) * orbitDist;
-                        camOffset.z = -Math.cos(pitchAngle) * orbitDist; // -Z is Behind
-
-                        // Apply Ray's Yaw
-                        camOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), ray.rotation.y);
-
-                        targetPos = ray.position.clone().add(camOffset);
-
-                        // Force Up vector stability
-                        ray.up.set(0, 1, 0);
-
-                    } else {
-                        // Standard Flight Camera
-                        // Reset Pitch when exiting chase? Or keep it? keeping is fine.
-                        const offset = new THREE.Vector3(0, CONFIG.cameraHeight, -CONFIG.cameraDist);
-                        targetPos = offset.applyMatrix4(ray.matrixWorld);
-                    }
+                    // Landed Camera
+                    camControls.style.display = 'none';
+                    const offset = new THREE.Vector3(0, CONFIG.cameraHeight, -CONFIG.cameraDist);
+                    const targetPos = offset.applyMatrix4(ray.matrixWorld);
 
                     camera.position.lerp(targetPos, CONFIG.cameraLag);
                     camera.lookAt(ray.position);
@@ -1811,8 +1869,29 @@
                     pos.setY(i, wave);
                 }
                 pos.needsUpdate = true;
-                const offset = new THREE.Vector3(0, CONFIG.cameraHeight, -CONFIG.cameraDist);
-                const targetPos = offset.applyMatrix4(ray.matrixWorld);
+                // Chase Camera Logic
+                let targetPos;
+                if (isChasing) {
+                    camControls.style.display = 'flex';
+
+                    if (ray.userData.cameraPitch === undefined) ray.userData.cameraPitch = 0;
+                    if (isCamUpPressed) ray.userData.cameraPitch += 0.02;
+                    if (isCamDownPressed) ray.userData.cameraPitch -= 0.02;
+                    ray.userData.cameraPitch = Math.max(0, Math.min(1.4, ray.userData.cameraPitch));
+
+                    const pitchAngle = ray.userData.cameraPitch;
+                    const orbitDist = 40.0;
+                    const camOffset = new THREE.Vector3(0, 0, 0);
+                    camOffset.y = Math.sin(pitchAngle) * orbitDist;
+                    camOffset.z = -Math.cos(pitchAngle) * orbitDist;
+                    camOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), ray.rotation.y);
+                    targetPos = ray.position.clone().add(camOffset);
+                    ray.up.set(0, 1, 0);
+                } else {
+                    camControls.style.display = 'none';
+                    const offset = new THREE.Vector3(0, CONFIG.cameraHeight, -CONFIG.cameraDist);
+                    targetPos = offset.applyMatrix4(ray.matrixWorld);
+                }
                 camera.position.lerp(targetPos, CONFIG.cameraLag);
                 camera.lookAt(ray.position);
             }
@@ -1843,229 +1922,233 @@
                     if (moved) updateGroundGeometry(chunk.geometry, chunk.position.x, chunk.position.z);
                 });
                 const loopDist = 2500;
-                [...worldObjects, ...serpents, ...nightLights].forEach(obj => {
-                    const dist = obj.position.distanceTo(ray.position);
-                    if (dist > loopDist) {
-                        if (nightLights.includes(obj)) {
-                            resetNightLightPosition(obj);
-                        } else if (dailyGuests.includes(obj)) {
-                            resetGuestPosition(obj);
-                        } else {
-                            const direction = new THREE.Vector3(0, 1, 0).applyQuaternion(ray.quaternion).normalize();
-                            const angle = Math.atan2(direction.z, direction.x) + (Math.random() - 0.5) * 2.5;
-                            const respawnDist = loopDist - 50;
-                            obj.position.x = ray.position.x + Math.cos(angle) * respawnDist;
-                            obj.position.z = ray.position.z + Math.sin(angle) * respawnDist;
-                            if (obj.geometry && obj.geometry.type === 'SphereGeometry' && obj.material.type === 'MeshLambertMaterial') {
-                                obj.position.y = -35;
-                            } else if (obj.userData && obj.userData.direction) {
-                                // Streamer Respawn
-                                const angle = Math.random() * Math.PI * 2;
-                                const dist = 500 + Math.random() * 1000;
-                                obj.position.x = ray.position.x + Math.cos(angle) * dist;
-                                obj.position.z = ray.position.z + Math.sin(angle) * dist;
-                                obj.position.y = Math.random() * 50 + 10;
+
+                // Safe Object Loop
+                if (ray) {
+                    [...worldObjects, ...serpents, ...nightLights].forEach(obj => {
+                        const dist = obj.position.distanceTo(ray.position);
+                        if (dist > loopDist) {
+                            if (nightLights.includes(obj)) {
+                                resetNightLightPosition(obj);
+                            } else if (dailyGuests.includes(obj)) {
+                                resetGuestPosition(obj);
                             } else {
-                                obj.position.y = Math.random() * 50 + 20;
-                                if (obj.material.opacity === 0.3) {
-                                    const scaleH = 15 + Math.random() * 30;
-                                    const scaleV = 3 + Math.random() * 4;
-                                    obj.scale.set(scaleH, scaleV, scaleH * (0.8 + Math.random() * 0.4));
-                                    obj.rotation.y = Math.random() * Math.PI;
-                                }
-                            }
-                        }
-                    }
-                    if (serpents.includes(obj)) {
-                        const sData = obj.userData;
-                        // シンプルな移動ロジックに戻す (全体に配置)
-                        obj.position.addScaledVector(sData.direction, sData.speed);
-
-                        const positions = obj.geometry.attributes.position;
-                        for (let i = 0; i < positions.count; i++) {
-                            const y = positions.getY(i);
-                            const wave = Math.sin(time * sData.wiggleSpeed + y * 0.1 + sData.offset) * 2.0;
-                            positions.setZ(i, wave);
-                        }
-                        positions.needsUpdate = true;
-                    }
-                    if (obj.userData.isGuest) {
-                        // Velocity Calculation (Stability Fix)
-                        if (!obj.userData.lastPosition) {
-                            obj.userData.lastPosition = obj.position.clone();
-                            obj.userData.velocity = new THREE.Vector3();
-                        } else {
-                            obj.userData.velocity.subVectors(obj.position, obj.userData.lastPosition);
-                            obj.userData.lastPosition.copy(obj.position);
-                        }
-                        if (obj.userData.guestType === 'walker') {
-                            obj.translateZ(obj.userData.walkSpeed);
-                            const wAnim = Math.sin(time * obj.userData.animSpeed);
-                            const limbs = obj.userData.limbs;
-                            if (limbs) {
-                                limbs.leftArm.rotation.x = wAnim;
-                                limbs.rightArm.rotation.x = -wAnim;
-                                limbs.leftLeg.rotation.x = -wAnim;
-                                limbs.rightLeg.rotation.x = wAnim;
-                            }
-                            obj.rotation.z = Math.sin(time * 5 + obj.userData.phase) * 0.05;
-                        } else if (obj.userData.guestType === 'bird') {
-                            // Straight Flight with Slow Turns
-                            if (!obj.userData.direction) {
-                                // Fallback init
-                                obj.userData.direction = new THREE.Vector3(1, 0, 0);
-                                obj.userData.targetDirection = new THREE.Vector3(1, 0, 0);
-                                obj.userData.turnTimer = 0;
-                            }
-
-                            // Timer for changing direction
-                            obj.userData.turnTimer--;
-                            if (obj.userData.turnTimer <= 0) {
-                                // Pick new target direction (Scatter approx 45 degrees)
-                                const angle = (Math.random() - 0.5) * 1.5; // +/- 0.75 rad (45 deg)
-                                const currentAngle = Math.atan2(obj.userData.direction.x, obj.userData.direction.z);
-                                const newAngle = currentAngle + angle;
-                                obj.userData.targetDirection.set(Math.sin(newAngle), 0, Math.cos(newAngle)).normalize();
-                                obj.userData.turnTimer = 200 + Math.random() * 400; // 3-10 seconds
-                            }
-
-                            // Smooth Turn
-                            const prevDir = obj.userData.direction.clone();
-                            obj.userData.direction.lerp(obj.userData.targetDirection, 0.005); // Very slow turn
-                            obj.userData.direction.normalize();
-
-                            // Move
-                            obj.position.addScaledVector(obj.userData.direction, obj.userData.flySpeed);
-
-                            // Rotate
-                            const targetRotY = Math.atan2(obj.userData.direction.x, obj.userData.direction.z);
-                            obj.rotation.y = targetRotY;
-
-                            // Bank (Roll) based on turn
-                            // Calculate turn rate
-                            const turnRate = obj.userData.direction.x * prevDir.z - obj.userData.direction.z * prevDir.x; // Cross product Y component approx
-                            // Bank: Turn Left -> Roll Left (positive Z? No, Roll Left is +Z? let's check)
-                            // Right hand rule Z axis out (back).
-                            // Roll Left (Wing Down Left) -> +Z.
-                            // Turn Left -> Positive Cross Y.
-                            // So Roll = TurnRate * factor.
-                            // Let's add oscillation
-                            obj.rotation.z = (turnRate * 800) + Math.sin(time * 10) * 0.1;
-
-                            // はばたき
-                            if (obj.userData.lWing && obj.userData.rWing) {
-                                const flap = Math.sin(time * 15) * 0.5;
-                                obj.userData.lWing.rotation.z = 0.3 + flap;
-                                obj.userData.rWing.rotation.z = -0.3 - flap;
-                            }
-                        } else if (obj.userData.guestType === 'fish') {
-                            // 可変スピード (15km/h ~ 30km/h => 0.11 ~ 0.22)
-                            // sine wave based variation: base 0.165 + amp 0.055
-                            const varSpeed = 0.165 + Math.sin(time * 0.5 + obj.userData.phase) * 0.055;
-                            // 方向転換 (ゆらゆら)
-                            obj.rotation.y += Math.sin(time * 0.2 + obj.userData.phase) * 0.005;
-
-                            // 進行方向に移動 (自分のZ軸方向へ)
-                            const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(obj.quaternion);
-                            obj.position.addScaledVector(fwd, varSpeed);
-
-                            obj.rotation.z = Math.sin(time * 15) * 0.1;
-                            // ヒレ（翼）のはばたき
-                            const body = obj.children[0]; // obj is Group, children[0] is body if constructed as per createFish
-                            // However, in createFish: fish.add(body), fish.add(lFin), fish.add(rFin)
-                            // So children[1] and children[2] are fins.
-                            if (obj.children.length >= 3) {
-                                const wingL = obj.children[1];
-                                const wingR = obj.children[2];
-                                const flap = Math.sin(time * 10 + obj.userData.phase) * 0.4;
-                                wingL.rotation.z = -0.3 + flap; // Base angle correction
-                                wingR.rotation.z = 0.3 - flap;
-                            }
-                        } else if (obj.userData.guestType === 'orb') {
-                            // ゆらゆら浮遊（ボビング）
-                            const bob = Math.sin(time * 1 + obj.userData.phase) * 0.1;
-                            obj.position.y += bob;
-                            obj.rotation.y += 0.005;
-                        } else if (obj.userData.guestType === 'npcRay') {
-                            obj.translateY(obj.userData.swimSpeed);
-                            obj.rotation.z = Math.sin(time * 2 + obj.userData.phase) * 0.1;
-
-                            // ヒレのアニメーション
-                            const pos = obj.geometry.attributes.position;
-                            for (let i = 0; i < pos.count; i++) {
-                                const x = pos.getX(i);
-                                const dist = Math.abs(x);
-                                const wave = Math.sin(time * 3 + x * 0.5 + obj.userData.phase) * (dist * 0.15);
-                                pos.setZ(i, wave);
-                            }
-                            pos.needsUpdate = true;
-                        }
-
-                        // --- Mountain Avoidance System ---
-                        // Guests avoid mountains to prevent collisions/jittering.
-                        if (obj.userData.guestType !== 'orb') {
-                            const avoidRadius = 60; // Detection range
-                            mountains.forEach(mt => {
-                                const dx = obj.position.x - mt.position.x;
-                                const dz = obj.position.z - mt.position.z;
-                                const distSq = dx * dx + dz * dz;
-                                const mtRadius = 30 * mt.scale.x; // Mountain base radius
-                                const safeDist = mtRadius + avoidRadius;
-
-                                if (distSq < safeDist * safeDist) {
-                                    const dist = Math.sqrt(distSq);
-                                    if (dist < 0.1) return; // Prevent division by zero
-
-                                    const penetration = safeDist - dist;
-                                    const pushFactor = Math.min(penetration * 0.05, 1.0); // Smooth push strength
-
-                                    // Normalized direction AWAY from mountain
-                                    const bx = dx / dist;
-                                    const bz = dz / dist;
-
-                                    if (obj.userData.guestType === 'walker' || obj.userData.guestType === 'npcRay') {
-                                        // Self-propelled: STEER away (Rotate Y)
-                                        // Calculate target angle away from mountain
-                                        const targetAngle = Math.atan2(dx, dz); // Math.atan2(x, y) => Angle from North? No, standard atan2(y, x).
-                                        // But here we want angle in XZ plane.
-                                        // THREE.js rotation.y: 0 is -Z? No, depends on camera.
-                                        // Let's use simple logic: If obstacle is to the Left, Turn Right.
-
-                                        // Vector to Obstacle (relative to Guest Fwd)
-                                        // Guest Fwd:
-                                        const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(obj.quaternion);
-                                        // Vector To Obstacle: (-dx, -dz) (Guest to Mountain is -dx, -dz. Wait dx = obj - mt. So dx is Vector FROM Mt TO Obj. So dx IS the Escape Vector)
-                                        // Correct. dx/dz is direction AWAY from mountain.
-
-                                        // We want to turn TOWARDS (dx, dz).
-                                        const desiredAngle = Math.atan2(dx, dz); // atan2(x, y) results in angle from Y axis (Z) in clockwise?
-                                        // Standard atan2(y, x) is angle from X axis.
-                                        // Here we use (x, z).
-
-                                        // Let's just Apply Torque to align Fwd with (dx, dz).
-                                        // Current Fwd: (fwd.x, fwd.z).
-                                        // Target Fwd: (bx, bz).
-                                        // Cross product Y = fwd.z * bx - fwd.x * bz.
-                                        // If positve -> Turn Left?
-                                        const crossY = fwd.z * bx - fwd.x * bz;
-                                        obj.rotation.y += crossY * 0.1; // Turn towards safety
-
-                                        // Also apply slight position push to prevent getting stuck
-                                        obj.position.x += bx * 0.1;
-                                        obj.position.z += bz * 0.1;
-
-                                    } else {
-                                        // Rail-movers (Bird/Fish): VISCOUS PUSH (Slide orbit)
-                                        // Push away smoothly to shift the orbit center
-                                        obj.position.x += bx * pushFactor;
-                                        obj.position.z += bz * pushFactor;
+                                const direction = new THREE.Vector3(0, 1, 0).applyQuaternion(ray.quaternion).normalize();
+                                const angle = Math.atan2(direction.z, direction.x) + (Math.random() - 0.5) * 2.5;
+                                const respawnDist = loopDist - 50;
+                                obj.position.x = ray.position.x + Math.cos(angle) * respawnDist;
+                                obj.position.z = ray.position.z + Math.sin(angle) * respawnDist;
+                                if (obj.geometry && obj.geometry.type === 'SphereGeometry' && obj.material.type === 'MeshLambertMaterial') {
+                                    obj.position.y = -35;
+                                } else if (obj.userData && obj.userData.direction) {
+                                    // Streamer Respawn
+                                    const angle = Math.random() * Math.PI * 2;
+                                    const dist = 500 + Math.random() * 1000;
+                                    obj.position.x = ray.position.x + Math.cos(angle) * dist;
+                                    obj.position.z = ray.position.z + Math.sin(angle) * dist;
+                                    obj.position.y = Math.random() * 50 + 10;
+                                } else {
+                                    obj.position.y = Math.random() * 50 + 20;
+                                    if (obj.material.opacity === 0.3) {
+                                        const scaleH = 15 + Math.random() * 30;
+                                        const scaleV = 3 + Math.random() * 4;
+                                        obj.scale.set(scaleH, scaleV, scaleH * (0.8 + Math.random() * 0.4));
+                                        obj.rotation.y = Math.random() * Math.PI;
                                     }
                                 }
-                            });
+                            }
                         }
-                    }
-                });
-            }
+                        if (serpents.includes(obj)) {
+                            const sData = obj.userData;
+                            // シンプルな移動ロジックに戻す (全体に配置)
+                            obj.position.addScaledVector(sData.direction, sData.speed);
+
+                            const positions = obj.geometry.attributes.position;
+                            for (let i = 0; i < positions.count; i++) {
+                                const y = positions.getY(i);
+                                const wave = Math.sin(time * sData.wiggleSpeed + y * 0.1 + sData.offset) * 2.0;
+                                positions.setZ(i, wave);
+                            }
+                            positions.needsUpdate = true;
+                        }
+                        if (obj.userData.isGuest) {
+                            // Velocity Calculation (Stability Fix)
+                            if (!obj.userData.lastPosition) {
+                                obj.userData.lastPosition = obj.position.clone();
+                                obj.userData.velocity = new THREE.Vector3();
+                            } else {
+                                obj.userData.velocity.subVectors(obj.position, obj.userData.lastPosition);
+                                obj.userData.lastPosition.copy(obj.position);
+                            }
+                            if (obj.userData.guestType === 'walker') {
+                                obj.translateZ(obj.userData.walkSpeed);
+                                const wAnim = Math.sin(time * obj.userData.animSpeed);
+                                const limbs = obj.userData.limbs;
+                                if (limbs) {
+                                    limbs.leftArm.rotation.x = wAnim;
+                                    limbs.rightArm.rotation.x = -wAnim;
+                                    limbs.leftLeg.rotation.x = -wAnim;
+                                    limbs.rightLeg.rotation.x = wAnim;
+                                }
+                                obj.rotation.z = Math.sin(time * 5 + obj.userData.phase) * 0.05;
+                            } else if (obj.userData.guestType === 'bird') {
+                                // Straight Flight with Slow Turns
+                                if (!obj.userData.direction) {
+                                    // Fallback init
+                                    obj.userData.direction = new THREE.Vector3(1, 0, 0);
+                                    obj.userData.targetDirection = new THREE.Vector3(1, 0, 0);
+                                    obj.userData.turnTimer = 0;
+                                }
+
+                                // Timer for changing direction
+                                obj.userData.turnTimer--;
+                                if (obj.userData.turnTimer <= 0) {
+                                    // Pick new target direction (Scatter approx 45 degrees)
+                                    const angle = (Math.random() - 0.5) * 1.5; // +/- 0.75 rad (45 deg)
+                                    const currentAngle = Math.atan2(obj.userData.direction.x, obj.userData.direction.z);
+                                    const newAngle = currentAngle + angle;
+                                    obj.userData.targetDirection.set(Math.sin(newAngle), 0, Math.cos(newAngle)).normalize();
+                                    obj.userData.turnTimer = 200 + Math.random() * 400; // 3-10 seconds
+                                }
+
+                                // Smooth Turn
+                                const prevDir = obj.userData.direction.clone();
+                                obj.userData.direction.lerp(obj.userData.targetDirection, 0.005); // Very slow turn
+                                obj.userData.direction.normalize();
+
+                                // Move
+                                obj.position.addScaledVector(obj.userData.direction, obj.userData.flySpeed);
+
+                                // Rotate
+                                const targetRotY = Math.atan2(obj.userData.direction.x, obj.userData.direction.z);
+                                obj.rotation.y = targetRotY;
+
+                                // Bank (Roll) based on turn
+                                // Calculate turn rate
+                                const turnRate = obj.userData.direction.x * prevDir.z - obj.userData.direction.z * prevDir.x; // Cross product Y component approx
+                                // Bank: Turn Left -> Roll Left (positive Z? No, Roll Left is +Z? let's check)
+                                // Right hand rule Z axis out (back).
+                                // Roll Left (Wing Down Left) -> +Z.
+                                // Turn Left -> Positive Cross Y.
+                                // So Roll = TurnRate * factor.
+                                // Let's add oscillation
+                                obj.rotation.z = (turnRate * 800) + Math.sin(time * 10) * 0.1;
+
+                                // はばたき
+                                if (obj.userData.lWing && obj.userData.rWing) {
+                                    const flap = Math.sin(time * 15) * 0.5;
+                                    obj.userData.lWing.rotation.z = 0.3 + flap;
+                                    obj.userData.rWing.rotation.z = -0.3 - flap;
+                                }
+                            } else if (obj.userData.guestType === 'fish') {
+                                // 可変スピード (15km/h ~ 30km/h => 0.11 ~ 0.22)
+                                // sine wave based variation: base 0.165 + amp 0.055
+                                const varSpeed = 0.165 + Math.sin(time * 0.5 + obj.userData.phase) * 0.055;
+                                // 方向転換 (ゆらゆら)
+                                obj.rotation.y += Math.sin(time * 0.2 + obj.userData.phase) * 0.005;
+
+                                // 進行方向に移動 (自分のZ軸方向へ)
+                                const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(obj.quaternion);
+                                obj.position.addScaledVector(fwd, varSpeed);
+
+                                obj.rotation.z = Math.sin(time * 15) * 0.1;
+                                // ヒレ（翼）のはばたき
+                                const body = obj.children[0]; // obj is Group, children[0] is body if constructed as per createFish
+                                // However, in createFish: fish.add(body), fish.add(lFin), fish.add(rFin)
+                                // So children[1] and children[2] are fins.
+                                if (obj.children.length >= 3) {
+                                    const wingL = obj.children[1];
+                                    const wingR = obj.children[2];
+                                    const flap = Math.sin(time * 10 + obj.userData.phase) * 0.4;
+                                    wingL.rotation.z = -0.3 + flap; // Base angle correction
+                                    wingR.rotation.z = 0.3 - flap;
+                                }
+                            } else if (obj.userData.guestType === 'orb') {
+                                // ゆらゆら浮遊（ボビング）
+                                const bob = Math.sin(time * 1 + obj.userData.phase) * 0.1;
+                                obj.position.y += bob;
+                                obj.rotation.y += 0.005;
+                            } else if (obj.userData.guestType === 'npcRay') {
+                                obj.translateY(obj.userData.swimSpeed);
+                                obj.rotation.z = Math.sin(time * 2 + obj.userData.phase) * 0.1;
+
+                                // ヒレのアニメーション
+                                const pos = obj.geometry.attributes.position;
+                                for (let i = 0; i < pos.count; i++) {
+                                    const x = pos.getX(i);
+                                    const dist = Math.abs(x);
+                                    const wave = Math.sin(time * 3 + x * 0.5 + obj.userData.phase) * (dist * 0.15);
+                                    pos.setZ(i, wave);
+                                }
+                                pos.needsUpdate = true;
+                            }
+
+                            // --- Mountain Avoidance System ---
+                            // Guests avoid mountains to prevent collisions/jittering.
+                            if (obj.userData.guestType !== 'orb') {
+                                const avoidRadius = 60; // Detection range
+                                mountains.forEach(mt => {
+                                    const dx = obj.position.x - mt.position.x;
+                                    const dz = obj.position.z - mt.position.z;
+                                    const distSq = dx * dx + dz * dz;
+                                    const mtRadius = 30 * mt.scale.x; // Mountain base radius
+                                    const safeDist = mtRadius + avoidRadius;
+
+                                    if (distSq < safeDist * safeDist) {
+                                        const dist = Math.sqrt(distSq);
+                                        if (dist < 0.1) return; // Prevent division by zero
+
+                                        const penetration = safeDist - dist;
+                                        const pushFactor = Math.min(penetration * 0.05, 1.0); // Smooth push strength
+
+                                        // Normalized direction AWAY from mountain
+                                        const bx = dx / dist;
+                                        const bz = dz / dist;
+
+                                        if (obj.userData.guestType === 'walker' || obj.userData.guestType === 'npcRay') {
+                                            // Self-propelled: STEER away (Rotate Y)
+                                            // Calculate target angle away from mountain
+                                            const targetAngle = Math.atan2(dx, dz); // Math.atan2(x, y) => Angle from North? No, standard atan2(y, x).
+                                            // But here we want angle in XZ plane.
+                                            // THREE.js rotation.y: 0 is -Z? No, depends on camera.
+                                            // Let's use simple logic: If obstacle is to the Left, Turn Right.
+
+                                            // Vector to Obstacle (relative to Guest Fwd)
+                                            // Guest Fwd:
+                                            const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(obj.quaternion);
+                                            // Vector To Obstacle: (-dx, -dz) (Guest to Mountain is -dx, -dz. Wait dx = obj - mt. So dx is Vector FROM Mt TO Obj. So dx IS the Escape Vector)
+                                            // Correct. dx/dz is direction AWAY from mountain.
+
+                                            // We want to turn TOWARDS (dx, dz).
+                                            const desiredAngle = Math.atan2(dx, dz); // atan2(x, y) results in angle from Y axis (Z) in clockwise?
+                                            // Standard atan2(y, x) is angle from X axis.
+                                            // Here we use (x, z).
+
+                                            // Let's just Apply Torque to align Fwd with (dx, dz).
+                                            // Current Fwd: (fwd.x, fwd.z).
+                                            // Target Fwd: (bx, bz).
+                                            // Cross product Y = fwd.z * bx - fwd.x * bz.
+                                            // If positve -> Turn Left?
+                                            const crossY = fwd.z * bx - fwd.x * bz;
+                                            obj.rotation.y += crossY * 0.1; // Turn towards safety
+
+                                            // Also apply slight position push to prevent getting stuck
+                                            obj.position.x += bx * 0.1;
+                                            obj.position.z += bz * 0.1;
+
+                                        } else {
+                                            // Rail-movers (Bird/Fish): VISCOUS PUSH (Slide orbit)
+                                            // Push away smoothly to shift the orbit center
+                                            obj.position.x += bx * pushFactor;
+                                            obj.position.z += bz * pushFactor;
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    });
+                }
+            } // Close if(ray)
             renderer.render(scene, camera);
         }
 
